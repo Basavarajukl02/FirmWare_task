@@ -1,0 +1,86 @@
+#include <avr/io.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+#include <avr/eeprom.h>
+
+#define F_CPU 16000000UL
+#define BAUD_RATE 2400
+#define UBRR_VALUE ((F_CPU / 16 / BAUD_RATE) - 1)
+
+volatile uint16_t eeprom_addr = 0;
+volatile uint16_t data_count = 0;
+volatile uint32_t start_time = 0;
+volatile uint32_t end_time = 0;
+volatile float transmission_speed = 0;
+
+void USART_Init() {
+    // Set baud rate
+    UBRR0H = (uint8_t)(UBRR_VALUE >> 8);
+    UBRR0L = (uint8_t)UBRR_VALUE;
+    
+    // Enable receiver and transmitter
+    UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
+    
+    // Set frame format: 8 data, 1 stop bit
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+void USART_Transmit(char data) {
+    // Wait for empty transmit buffer
+    while (!(UCSR0A & (1 << UDRE0)));
+    
+    // Put data into buffer, sends the data
+    UDR0 = data;
+}
+
+ISR(USART_RX_vect) {
+    char received_data = UDR0;
+    
+    // Start measuring time when receiving the first byte
+    if (data_count == 0) {
+        start_time = micros();
+    }
+    
+    // Store received data in EEPROM
+    EEPROM_write_byte(eeprom_addr++, received_data);
+    data_count++;
+    
+    // If received all data, stop receiving
+    if (data_count >= 1000) {
+        end_time = micros();
+        
+        // Calculate transmission speed
+        transmission_speed = ((float)data_count * 8) / ((float)(end_time - start_time) / 1000000); // bits per second
+    }
+}
+
+void transmit_stored_data() {
+    for (uint16_t i = 0; i < 1000; i++) {
+        char data = EEPROM_read_byte(i);
+        USART_Transmit(data);
+        _delay_ms(1); // Adjust delay as needed to control transmission speed
+    }
+}
+
+int main(void) {
+    // Initialize UART
+    USART_Init();
+    
+    // Enable global interrupt
+    sei();
+    
+    // Wait until all data is received
+    while (data_count < 1000);
+    
+    // Transmit stored data back to PC
+    transmit_stored_data();
+    
+    // Print transmission speed
+    USART_Transmit('\n');
+    USART_Transmit('\r');
+    USART_TransmitString("Transmission Speed: ");
+    USART_TransmitFloat(transmission_speed);
+    USART_TransmitString(" bits/second");
+
+    while (1);
+}
